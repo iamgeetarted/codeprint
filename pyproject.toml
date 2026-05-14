@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codeprint"
+version = "1.0.0"
+description = "Async codebase quality scanner with semantic duplicate detection and AI insights"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "iamgeetarted", email = "marktimothydorsey@gmail.com"}]
+keywords = ["code", "quality", "metrics", "static-analysis", "duplicates", "ai", "cli", "async", "rich"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "rich>=12.0",
+    "numpy>=1.24",
+    "anthropic>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+codeprint = "codeprint.cli:entry_point"
+
+[project.urls]
+Homepage = "https://github.com/iamgeetarted/codeprint"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
