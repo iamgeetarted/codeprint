@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codeprint"
-version = "1.0.0"
+version = "1.1.0"
 description = "Async codebase quality scanner with semantic duplicate detection and AI insights"
 readme = "README.md"
 requires-python = ">=3.11"

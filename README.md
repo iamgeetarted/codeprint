@@ -1,5 +1,54 @@
 # codeprint
 
+## What's New in v1.1.0
+
+### `codeprint diff <path-a> <path-b> [--ai]` — Side-by-side codebase comparison
+
+Compare the quality metrics of two directories — before/after a refactor, or between two different projects. Green Δ means improvement, red means regression. Add `--ai` for a streamed narrative analysis.
+
+```bash
+codeprint diff ./v1 ./v2             # compare two versions
+codeprint diff ./legacy ./rewrite --ai   # with AI commentary
+```
+
+```
+╭─ Diff: legacy vs rewrite ─────────────────────────────────────╮
+│  Metric          legacy   rewrite        Δ                     │
+│  Files               42        38       -4                     │
+│  Total LOC        6,841     4,203   -2638 ✓                    │
+│  Functions          312       187    -125 ✓                    │
+│  Open TODOs          14         3     -11 ✓                    │
+│  Avg complexity     12.4       7.1     -5.3 ✓                  │
+│  Max fn LOC         182        64    -118 ✓                    │
+╰───────────────────────────────────────────────────────────────╯
+  Green Δ = improvement (B better than A) · Red Δ = regression
+```
+
+### `--format json|csv|markdown` — Structured output for all commands
+
+Export scan results, duplicate pairs, and search rankings in machine-readable formats for CI pipelines, dashboards, or further processing.
+
+```bash
+codeprint scan . --format json > report.json
+codeprint scan . --format csv | csvcut -c file,loc,complexity
+codeprint dupes . --format markdown > dupes.md
+codeprint search . "auth middleware" --format json
+```
+
+### Config file (`~/.codeprint.toml`)
+
+Persist default settings so you don't repeat flags every run.
+
+```toml
+# ~/.codeprint.toml
+[defaults]
+top = 20
+threshold = 0.80
+format = "table"
+```
+
+---
+
 **Async codebase quality scanner with semantic duplicate detection and AI architectural insights.**
 
 `codeprint` scans a Python or JavaScript project directory, extracts quality metrics from every source file concurrently (using `asyncio.TaskGroup`), finds near-duplicate code with TF-IDF cosine similarity, and can stream an AI architectural summary straight to your terminal.
