@@ -1,5 +1,75 @@
 # codeprint
 
+## What's New in v1.2.0
+
+### `codeprint watch [path]` — Live file-watch mode with auto-rescan
+
+Watch a directory for source file changes and automatically re-scan, showing a live Rich dashboard that updates in place. Useful for keeping an eye on quality metrics while actively developing.
+
+```bash
+codeprint watch .                  # watch current directory, poll every 3s
+codeprint watch ./src --interval 5 # poll every 5 seconds
+```
+
+```
+╭─ codeprint watch — myapp  ·  scan #3  ·  14:22:07 ──────────────╮
+│  Files by Complexity (42 total)          Summary                  │
+│  File                  LOC  Fns  Cmplx  Files          42         │
+│  api/endpoints.py      421   38   48.5  Total LOC   6,841         │
+│  utils/parser.py       318   22   31.2  Functions     312         │
+│  …                                      Avg Complexity 12.4       │
+│                                         TODOs          14         │
+│                                         Scan time    0.31s        │
+│                                         Changed                   │
+│                                           api/endpoints.py        │
+╰──────────────────────────────────────────────────────────────────╯
+  Polling every 3s  ·  Ctrl+C to exit
+```
+
+### `codeprint snapshot` — Save and compare metric snapshots over time
+
+Capture a point-in-time snapshot of your codebase metrics and compare it against a later snapshot to see how quality trends over time — perfect for tracking the impact of a refactor.
+
+```bash
+codeprint snapshot save .                          # save a snapshot
+codeprint snapshot save . --label "before refactor"
+codeprint snapshot list                            # list all snapshots
+codeprint snapshot compare myapp_1716300000 myapp_1716400000
+```
+
+```
+╭─ Snapshots (3) ─────────────────────────────────────────────────╮
+│  ID                    Root    When              Files   LOC      │
+│  myapp_1716300000      myapp   2024-05-21 10:00    42  6841      │
+│  myapp_1716400000      myapp   2024-05-22 14:00    38  4203      │
+╰─────────────────────────────────────────────────────────────────╯
+
+╭─ Snapshot compare ──────────────────────────────────────────────╮
+│  Metric         myapp (A)   myapp (B)   Δ                        │
+│  Files              42          38      -4                        │
+│  Total LOC        6841        4203   -2638                        │
+│  TODOs              14           3     -11                        │
+│  Avg Complexity   12.40        7.10    -5.3                       │
+╰─────────────────────────────────────────────────────────────────╯
+```
+
+### `codeprint completions SHELL` — Shell completion scripts
+
+Generate tab-completion scripts for bash, zsh, or fish so you can tab-complete commands, subcommands, and directory paths.
+
+```bash
+# bash — add to ~/.bashrc
+eval "$(codeprint completions bash)"
+
+# zsh — add to ~/.zshrc
+eval "$(codeprint completions zsh)"
+
+# fish — save to completions directory
+codeprint completions fish > ~/.config/fish/completions/codeprint.fish
+```
+
+---
+
 ## What's New in v1.1.0
 
 ### `codeprint diff <path-a> <path-b> [--ai]` — Side-by-side codebase comparison

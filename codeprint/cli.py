@@ -391,6 +391,327 @@ def cmd_diff(args: argparse.Namespace) -> None:
         _stream_diff_insights(a, b, label_a, label_b, metrics_a, metrics_b)
 
 
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Watch a directory for changes and auto-rescan, showing a live Rich dashboard."""
+    import os
+    import time as _time
+    from rich.live import Live
+    from rich.layout import Layout
+    from rich.panel import Panel
+    from rich.table import Table, box as rbox
+    from rich.align import Align
+    from rich.text import Text
+
+    root = _require_dir(args.path)
+    poll_interval = args.interval
+
+    def _collect_mtimes(directory: Path) -> dict[str, float]:
+        mtimes: dict[str, float] = {}
+        EXTS = {".py", ".js", ".ts", ".go", ".rs", ".java", ".c", ".cpp", ".rb", ".cs", ".swift"}
+        for p in directory.rglob("*"):
+            if p.is_file() and p.suffix in EXTS:
+                try:
+                    mtimes[str(p)] = p.stat().st_mtime
+                except OSError:
+                    pass
+        return mtimes
+
+    def _build_layout(
+        metrics: list,
+        root: Path,
+        scan_time: float,
+        scan_count: int,
+        changed_files: list[str],
+    ) -> Layout:
+        layout = Layout()
+        layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="main"),
+            Layout(name="footer", size=3),
+        )
+        layout["main"].split_row(
+            Layout(name="files", ratio=2),
+            Layout(name="sidebar", ratio=1),
+        )
+
+        ts = _time.strftime("%H:%M:%S")
+        layout["header"].update(
+            Panel(
+                Align.center(Text(f"codeprint watch — {root.name}  ·  scan #{scan_count}  ·  {ts}", style="bold cyan")),
+                border_style="cyan",
+            )
+        )
+
+        # Top files by complexity
+        top = sorted(metrics, key=lambda m: -m.complexity_score)[:15]
+        t = Table(box=rbox.SIMPLE, show_header=True, header_style="bold cyan", expand=True)
+        t.add_column("File", style="dim")
+        t.add_column("LOC", justify="right", style="white", width=6)
+        t.add_column("Fns", justify="right", style="cyan", width=5)
+        t.add_column("Cmplx", justify="right", style="yellow", width=6)
+        t.add_column("TODOs", justify="right", style="red", width=6)
+        for m in top:
+            try:
+                rel = str(Path(m.path).relative_to(root))
+            except ValueError:
+                rel = m.path
+            t.add_row(rel, str(m.loc), str(m.function_count), str(m.complexity_score), str(m.todo_count))
+        layout["files"].update(
+            Panel(t, title=f"Files by Complexity ({len(metrics)} total)", border_style="cyan")
+        )
+
+        # Summary sidebar
+        if metrics:
+            total_loc = sum(m.loc for m in metrics)
+            total_fns = sum(m.function_count for m in metrics)
+            total_todos = sum(m.todo_count for m in metrics)
+            avg_cplx = sum(m.complexity_score for m in metrics) / len(metrics)
+        else:
+            total_loc = total_fns = total_todos = 0
+            avg_cplx = 0.0
+
+        s = Table(box=rbox.SIMPLE, show_header=False, expand=True)
+        s.add_column("Key", style="cyan")
+        s.add_column("Val", style="white", justify="right")
+        s.add_row("Files", str(len(metrics)))
+        s.add_row("Total LOC", str(total_loc))
+        s.add_row("Functions", str(total_fns))
+        s.add_row("Avg Complexity", f"{avg_cplx:.1f}")
+        s.add_row("TODOs", str(total_todos))
+        s.add_row("Scan time", f"{scan_time:.2f}s")
+        if changed_files:
+            s.add_section()
+            s.add_row("[dim]Changed[/dim]", "")
+            for f in changed_files[-5:]:
+                try:
+                    rel = str(Path(f).relative_to(root))
+                except ValueError:
+                    rel = f
+                s.add_row(f"  [dim]{rel[:22]}[/dim]", "")
+        layout["sidebar"].update(Panel(s, title="Summary", border_style="yellow"))
+
+        layout["footer"].update(
+            Panel(
+                Align.center(Text(f"Polling every {poll_interval}s  ·  Ctrl+C to exit", style="dim")),
+                border_style="dim",
+            )
+        )
+        return layout
+
+    console.print(f"[cyan]Watching[/cyan] {root}  [dim](poll every {poll_interval}s)[/dim]")
+    console.print("[dim]Press Ctrl+C to exit.[/dim]\n")
+
+    prev_mtimes: dict[str, float] = {}
+    scan_count = 0
+    metrics: list = []
+    scan_time = 0.0
+    changed_files: list[str] = []
+
+    try:
+        # Initial scan
+        t0 = _time.monotonic()
+        metrics = asyncio.run(scan_directory(root))
+        scan_time = _time.monotonic() - t0
+        scan_count = 1
+        prev_mtimes = _collect_mtimes(root)
+
+        with Live(
+            _build_layout(metrics, root, scan_time, scan_count, []),
+            refresh_per_second=0.5,
+            screen=True,
+        ) as live:
+            while True:
+                _time.sleep(poll_interval)
+                cur_mtimes = _collect_mtimes(root)
+                changed = [
+                    f for f, mt in cur_mtimes.items()
+                    if prev_mtimes.get(f) != mt
+                ] + [f for f in prev_mtimes if f not in cur_mtimes]
+
+                if changed:
+                    prev_mtimes = cur_mtimes
+                    changed_files = changed
+                    t0 = _time.monotonic()
+                    metrics = asyncio.run(scan_directory(root))
+                    scan_time = _time.monotonic() - t0
+                    scan_count += 1
+
+                live.update(_build_layout(metrics, root, scan_time, scan_count, changed_files))
+    except KeyboardInterrupt:
+        console.print("[dim]Watch stopped.[/dim]")
+
+
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    """Manage metric snapshots: save, list, or compare."""
+    from .snapshot import save_snapshot, list_snapshots, load_snapshot
+    from rich.table import Table, box as rbox
+    from rich.panel import Panel
+    import time as _time
+    from datetime import datetime
+    from typing import Any
+
+    subcmd = args.snapshot_cmd
+
+    if subcmd == "save":
+        root = _require_dir(args.path)
+        console.print(f"[dim]Scanning {root}…[/dim]")
+        metrics = asyncio.run(_scan_with_progress(root, quiet=args.quiet))
+        if not metrics:
+            console.print("[yellow]No files found.[/yellow]")
+            return
+        snap_id = save_snapshot(metrics, root, label=args.label)
+        console.print(f"[green]✓ Snapshot saved:[/green] [cyan]{snap_id}[/cyan]")
+        console.print(
+            f"  [dim]{len(metrics)} files  ·  "
+            f"{sum(m.loc for m in metrics):,} LOC  ·  "
+            f"avg complexity {sum(m.complexity_score for m in metrics)/len(metrics):.1f}[/dim]"
+        )
+
+    elif subcmd == "list":
+        snaps = list_snapshots()
+        if not snaps:
+            console.print("[dim]No snapshots saved yet. Run: codeprint snapshot save PATH[/dim]")
+            return
+        t = Table(box=rbox.ROUNDED, show_header=True, header_style="bold cyan", border_style="dim")
+        t.add_column("ID", style="cyan")
+        t.add_column("Root", style="dim")
+        t.add_column("When", style="dim", width=18)
+        t.add_column("Files", justify="right")
+        t.add_column("LOC", justify="right")
+        t.add_column("Avg Cplx", justify="right")
+        t.add_column("Label", style="dim")
+        for s in snaps:
+            when = datetime.fromtimestamp(s["timestamp"]).strftime("%Y-%m-%d %H:%M")
+            t.add_row(
+                s["id"],
+                Path(s["root"]).name,
+                when,
+                str(s["file_count"]),
+                str(s["totals"]["loc"]),
+                str(s["avg_complexity"]),
+                s.get("label") or "",
+            )
+        console.print(Panel(t, title=f"Snapshots ({len(snaps)})", border_style="cyan", box=rbox.ROUNDED))
+
+    elif subcmd == "compare":
+        snap_a = load_snapshot(args.snap_a)
+        snap_b = load_snapshot(args.snap_b)
+        if not snap_a:
+            console.print(f"[red]Snapshot not found: {args.snap_a}[/red]")
+            return
+        if not snap_b:
+            console.print(f"[red]Snapshot not found: {args.snap_b}[/red]")
+            return
+
+        t = Table(box=rbox.ROUNDED, show_header=True, header_style="bold cyan", border_style="dim")
+        t.add_column("Metric", style="dim")
+        t.add_column(Path(snap_a["root"]).name + " (A)", justify="right", style="cyan")
+        t.add_column(Path(snap_b["root"]).name + " (B)", justify="right", style="magenta")
+        t.add_column("Δ", justify="right")
+
+        def _row(label: str, key_path: list[str], lower_is_better: bool = False) -> None:
+            va: Any = snap_a
+            vb: Any = snap_b
+            for k in key_path:
+                va = va.get(k, 0)
+                vb = vb.get(k, 0)
+            delta = (vb or 0) - (va or 0)
+            if delta == 0:
+                ds = "[dim]—[/dim]"
+            elif (delta < 0) == lower_is_better:
+                ds = f"[green]{delta:+}[/green]"
+            else:
+                ds = f"[red]{delta:+}[/red]"
+            t.add_row(label, str(va), str(vb), ds)
+
+        _row("Files", ["file_count"])
+        _row("Total LOC", ["totals", "loc"])
+        _row("Functions", ["totals", "functions"])
+        _row("TODOs", ["totals", "todos"], lower_is_better=True)
+        _row("Avg Complexity", ["avg_complexity"], lower_is_better=True)
+
+        ta = datetime.fromtimestamp(snap_a["timestamp"]).strftime("%Y-%m-%d %H:%M")
+        tb = datetime.fromtimestamp(snap_b["timestamp"]).strftime("%Y-%m-%d %H:%M")
+        title = f"Snapshot compare: {snap_a['id']} [{ta}] vs {snap_b['id']} [{tb}]"
+        console.print(Panel(t, title=title, border_style="cyan", box=rbox.ROUNDED))
+
+    else:
+        console.print("[dim]Usage: codeprint snapshot save PATH | list | compare SNAP_A SNAP_B[/dim]")
+
+
+def cmd_completions(args: argparse.Namespace) -> None:
+    """Print shell completion script for bash, zsh, or fish."""
+    shell = args.shell
+
+    if shell == "bash":
+        script = r"""# codeprint bash completion
+# eval "$(codeprint completions bash)"
+_codeprint_complete() {
+    local cur prev
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local cmds="scan dupes search insights diff watch snapshot completions"
+    local snap_cmds="save list compare"
+
+    if [[ $COMP_CWORD -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
+    elif [[ $COMP_CWORD -eq 2 ]]; then
+        case $prev in
+            snapshot)    COMPREPLY=($(compgen -W "$snap_cmds" -- "$cur")) ;;
+            completions) COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur")) ;;
+            scan|dupes|search|insights|watch) COMPREPLY=($(compgen -d -- "$cur")) ;;
+        esac
+    fi
+}
+complete -F _codeprint_complete codeprint
+"""
+    elif shell == "zsh":
+        script = r"""#compdef codeprint
+# eval "$(codeprint completions zsh)"
+_codeprint() {
+    local -a cmds
+    cmds=(
+        'scan:Scan a directory and show quality report'
+        'dupes:Find near-duplicate source files'
+        'search:Semantic code search'
+        'insights:AI architectural summary'
+        'diff:Compare two directories'
+        'watch:Watch for changes with live dashboard'
+        'snapshot:Save and compare metric snapshots'
+        'completions:Print shell completion script'
+    )
+    _arguments -C '1:command:->cmd' '*::args:->args'
+    case $state in
+        cmd)  _describe 'commands' cmds ;;
+        args)
+            case $words[1] in
+                snapshot)    local -a sc; sc=('save:Save snapshot' 'list:List snapshots' 'compare:Compare two snapshots'); _describe 'snapshot commands' sc ;;
+                completions) _values 'shell' bash zsh fish ;;
+                scan|dupes|search|insights|watch) _path_files -/ ;;
+            esac ;;
+    esac
+}
+_codeprint
+"""
+    elif shell == "fish":
+        script = """# codeprint fish completion
+# Save to ~/.config/fish/completions/codeprint.fish
+set -l cmds scan dupes search insights diff watch snapshot completions
+complete -c codeprint -f -n 'not __fish_seen_subcommand_from $cmds' -a "$cmds"
+complete -c codeprint -n '__fish_seen_subcommand_from snapshot' -a 'save list compare'
+complete -c codeprint -n '__fish_seen_subcommand_from completions' -a 'bash zsh fish'
+complete -c codeprint -n '__fish_seen_subcommand_from scan dupes search insights watch' -a '(__fish_complete_directories)'
+complete -c codeprint -n '__fish_seen_subcommand_from scan' -l ai -d 'Stream AI summary'
+complete -c codeprint -n '__fish_seen_subcommand_from scan dupes search' -s f -l format -a 'table json csv markdown'
+complete -c codeprint -n '__fish_seen_subcommand_from dupes' -s t -l threshold -d 'Similarity threshold (0-1)'
+"""
+    else:
+        console.print(f"[red]Unknown shell '{shell}'. Choose: bash, zsh, fish[/red]")
+        return
+
+    print(script)
+
+
 def _stream_diff_insights(
     a: dict, b: dict, label_a: str, label_b: str,
     metrics_a: list, metrics_b: list,
@@ -457,6 +778,14 @@ examples:
   codeprint insights .                  # AI architectural analysis only
   codeprint diff ./v1 ./v2              # compare two codebases
   codeprint diff ./legacy ./rewrite --ai
+  codeprint watch .                     # live dashboard, auto-rescan on changes
+  codeprint watch . --interval 5        # poll every 5 seconds
+  codeprint snapshot save .             # save a metric snapshot
+  codeprint snapshot save . --label "before refactor"
+  codeprint snapshot list               # list all saved snapshots
+  codeprint snapshot compare SNAP_A SNAP_B
+  codeprint completions bash            # generate bash completion script
+  eval "$(codeprint completions zsh)"   # activate zsh completions
 """,
     )
     parser.add_argument("--version", action="version", version=f"codeprint {__version__}")
@@ -513,6 +842,35 @@ examples:
     p_diff.add_argument("--ai", action="store_true",
                         help="Stream an AI commentary on the diff (requires ANTHROPIC_API_KEY)")
     p_diff.set_defaults(func=cmd_diff)
+
+    # watch
+    p_watch = sub.add_parser("watch", help="Watch a directory for changes and auto-rescan with live dashboard")
+    p_watch.add_argument("path", nargs="?", default=".", help="Directory to watch (default: .)")
+    p_watch.add_argument("--interval", "-i", type=float, default=3.0, metavar="SECS",
+                         help="Poll interval in seconds (default: 3)")
+    p_watch.set_defaults(func=cmd_watch)
+
+    # snapshot
+    p_snap = sub.add_parser("snapshot", help="Save and compare metric snapshots over time")
+    snap_sub = p_snap.add_subparsers(dest="snapshot_cmd")
+
+    ps_save = snap_sub.add_parser("save", help="Save a metric snapshot of a directory")
+    ps_save.add_argument("path", nargs="?", default=".", help="Directory to snapshot (default: .)")
+    ps_save.add_argument("--label", "-l", metavar="TEXT", help="Optional label for this snapshot")
+    ps_save.add_argument("--quiet", "-q", action="store_true")
+
+    snap_sub.add_parser("list", help="List all saved snapshots")
+
+    ps_cmp = snap_sub.add_parser("compare", help="Compare two snapshots side-by-side")
+    ps_cmp.add_argument("snap_a", help="Snapshot ID (or prefix) for baseline")
+    ps_cmp.add_argument("snap_b", help="Snapshot ID (or prefix) to compare against")
+
+    p_snap.set_defaults(func=cmd_snapshot)
+
+    # completions
+    p_comp = sub.add_parser("completions", help="Print shell completion script (bash/zsh/fish)")
+    p_comp.add_argument("shell", choices=["bash", "zsh", "fish"], help="Target shell")
+    p_comp.set_defaults(func=cmd_completions)
 
     args = parser.parse_args(argv)
     if not args.command:
